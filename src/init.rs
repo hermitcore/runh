@@ -39,7 +39,7 @@ enum InitStage {
 	Child,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct InitConfig {
 	spec: Spec,
 	cloneflags: CloneFlags,
@@ -48,7 +48,7 @@ struct InitConfig {
 	is_hermit_container: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct SetupArgs {
 	stage: InitStage,
 	init_pipe: RawFd,
@@ -192,13 +192,13 @@ fn clone_process(mut args: Box<CloneArgs>) -> nix::unistd::Pid {
 
 	let res = unsafe {
 		let combined = nix::sched::CloneFlags::CLONE_PARENT.bits() | libc::SIGCHLD;
-		let ptr = args.stack.as_mut_ptr().add(args.stack.len());
+		let ptr = args.stack.as_mut_ptr().add(args.stack.len() - 16);
 		let ptr_aligned = ptr.offset(-((ptr as usize % 16) as isize));
 		libc::clone(
 			std::mem::transmute(callback as extern "C" fn(*mut CloneArgs) -> i32),
 			ptr_aligned as *mut libc::c_void,
 			combined,
-			Box::into_raw(args) as *mut _ as *mut libc::c_void,
+			Box::into_raw(args) as *mut libc::c_void,
 		)
 	};
 
@@ -249,7 +249,7 @@ fn init_stage(args: SetupArgs) -> isize {
 		// 	return 0; // Exit parent
 		// }
 		InitStage::Parent => {
-			debug!("enter init_stage parent");
+			debug!("Enter init_stage parent");
 			// Setting the name is just for debugging purposes so it doesnt cause problems if it fails
 			let _ = prctl::set_name("runh:PARENT");
 
@@ -288,7 +288,7 @@ fn init_stage(args: SetupArgs) -> isize {
 			}))
 			.into();
 
-			debug!("send child PID to runh create");
+			debug!("Send child PID to runh create");
 			let mut init_pipe = unsafe { File::from_raw_fd(args.init_pipe) };
 			let written_bytes = init_pipe
 				.write(&child_pid.to_le_bytes())
@@ -297,7 +297,7 @@ fn init_stage(args: SetupArgs) -> isize {
 			0 // Exit child process
 		}
 		InitStage::Child => {
-			debug!("enter init_stage child");
+			debug!("Enter init_stage child");
 			let _ = prctl::set_name("runh:INIT");
 			debug!("Welcome to the container! This is PID {}", Pid::this());
 
@@ -316,7 +316,7 @@ fn init_stage(args: SetupArgs) -> isize {
 			}
 
 			// In runc's case, this is the point where control is transferred back to the go runtime
-			debug!("read config from spec file");
+			debug!("Read config from spec file");
 			let fifo_fd: i32 = env::var("RUNH_FIFOFD")
 				.expect("No fifo fd given!")
 				.parse()
@@ -358,12 +358,14 @@ fn init_stage(args: SetupArgs) -> isize {
 			// Set environment variables found in the config
 			if let Some(process) = &args.config.spec.process() {
 				if let Some(env) = &process.env() {
-					debug!("load environment variables from config");
+					debug!("Load environment variables from config");
 					for var in env {
 						let (name, value) = var.split_once('=').unwrap_or_else(|| {
 							panic!("Could not parse environment variable: {}", var)
 						});
-						std::env::set_var(name, value);
+						if !name.is_empty() {
+							std::env::set_var(name, value);
+						}
 					}
 				}
 			}
